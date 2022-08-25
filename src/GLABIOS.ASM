@@ -115,12 +115,13 @@ ARCH_5150		EQU	'P'			; 5150
 ARCH_5160		EQU	'X'			; 5160 v1
 ARCH_5160v2		EQU	'Y'			; 5160 v2/3
 ARCH_TURBO		EQU	'T'			; Turbo or clone
+ARCH_EMM		EQU	'E'			; EMM Computers/Homebrew8088
 
 ;
 ; CPU Instruction Set Target
 ;
 CPU_8088		EQU	'8'			; 808x compatible
-CPU_V20		EQU	'V'			; V20 only
+CPU_V20		EQU	'V'			; V20/V40 only
 
 ;
 ; Boot to Turbo or Normal Speed
@@ -140,21 +141,26 @@ BOOT_NORMAL		EQU	'N'
 ;ARCH_TYPE		EQU	ARCH_5150		; PC 5150
 ;ARCH_TYPE		EQU	ARCH_5160		; PC 5160 (recommended)
 ;ARCH_TYPE		EQU	ARCH_5160v2		; PC 5160v2 (not recommended)
-ARCH_TYPE		EQU	ARCH_TURBO		; Turbo (clock >= 4.77MHz)
+;ARCH_TYPE		EQU	ARCH_TURBO		; Turbo (clock >= 4.77MHz)
+ARCH_TYPE		EQU	ARCH_EMM		; EMM Computers/Homebrew8088
 	ENDIF
 
 ;----------------------------------------------------------------------------;
 ; Default CPU Instruction Set Target
 ;
 	IFNDEF CPU_TYPE
-CPU_TYPE		EQU	CPU_8088		; CPU_8088 or CPU_V20
-;CPU_TYPE		EQU	CPU_V20		; use V20-only instructions
+;CPU_TYPE		EQU	CPU_8088		; CPU_8088 or CPU_V20
+CPU_TYPE		EQU	CPU_V20		; use V20-only instructions
 	ENDIF
 
 ;----------------------------------------------------------------------------;
 ; Additional Build-time Support
 ;
+	IF ARCH_TYPE EQ ARCH_EMM
+BASIC_ROM		EQU	0			; BASIC ROM support at 0F600h
+	ELSE
 BASIC_ROM		EQU	1			; BASIC ROM support at 0F600h
+	ENDIF
 
 ;----------------------------------------------------------------------------;
 ; CGA Snow Removal Method
@@ -176,21 +182,35 @@ POST_VIDEO_TYPE	EQU	1		; display Video adapter type
 ; Enable/Disable POST tests - Not all tests can be enabled due to 8K ROM space
 ;
 POST_TEST_INST	EQU	0		; POST CPU Instruction Test
+POST_TEST_CHK_ROM	EQU	1		; POST Checksum ROM
+
+	IF ARCH_TYPE EQ ARCH_EMM
+POST_TEST_DMA	EQU	0		; POST DMA Register Test
+POST_TEST_PIT_1	EQU	0		; POST Timer Channel 1 Test
+POST_TEST_PIC_REG	EQU	0		; POST PIC Register Test
+POST_TEST_PIC_INT	EQU	0		; POST PIC Interrupt Test
+	ELSE
 POST_TEST_DMA	EQU	1		; POST DMA Register Test
 POST_TEST_PIT_1	EQU	1		; POST Timer Channel 1 Test
 POST_TEST_PIC_REG	EQU	1		; POST PIC Register Test
 POST_TEST_PIC_INT	EQU	1		; POST PIC Interrupt Test
-POST_TEST_CHK_ROM	EQU	1		; POST Checksum ROM
+	ENDIF
 
 ;----------------------------------------------------------------------------;
 ; Advanced Options (may void your warranty)
 ;
 MAX_RAM 		EQU	640		; Max detectable RAM (in KB)
-DRAM_REFRESH	EQU	1		; 1: Use standard DMA DRAM refresh
-						; 0: Disable refresh (use only with SRAM!)
 OPT_ROM_START	EQU	0C800H	; start of storage / option ROM area
-OPT_ROM_END		EQU	0F600H	; end below this address
+
+	IF ARCH_TYPE EQ ARCH_EMM
+OPT_ROM_END		EQU	0FE00H	; end below this address
 INT_19_BOOT_HD	EQU	1		; attempt C: (80h) boot if floppy fails
+DRAM_REFRESH	EQU	0		; 0: Disable refresh (use only with SRAM!)
+	ELSE
+OPT_ROM_END		EQU	0F600H	; end below this address
+INT_19_BOOT_HD	EQU	0		; attempt C: (80h) boot if floppy fails
+DRAM_REFRESH	EQU	1		; 1: Use standard DMA DRAM refresh
+	ENDIF
 
 ;----------------------------------------------------------------------------;
 ; END Configurable Build Options
@@ -291,6 +311,10 @@ PPI_A			EQU	60H			; PPI (8255) Port A IN  - Keyboard input
 PPI_B			EQU	61H			; PPI (8255) Port B OUT - Speaker, Switch selection, Misc
 PPI_C			EQU	62H			; PPI (8255) Port C IN  - Switches
 PPI_CW		EQU	63H			; PPI (8255) Port Control Word
+
+; 8042 Keyboard Controller
+ATKB_IO		EQU	60H			; 8042 Keyboard input/output buffer register
+ATKB_CMD		EQU	64H			; 8042 Keyboard command/status register
 
 ; POST TEST card I/O
 POST_CARD_PORT	EQU	80H			; can be 60H, 80H, 300H, 313H
@@ -1566,6 +1590,14 @@ CPU_TEST_PASS:
 			ENDIF
 
 ;----------------------------------------------------------------------------;
+; Setup V40 for EMM shim
+;----------------------------------------------------------------------------;
+			IF ARCH_TYPE EQ ARCH_EMM
+	JMP	INIT_V40
+INIT_V40_RET:
+			ENDIF
+
+;----------------------------------------------------------------------------;
 ; [3] Set Zero Page Register for DMA channels 0 and 1
 ;----------------------------------------------------------------------------;
 	OUT	DMA_P_C1, AL 		; AL = high nibble of segment for DMA (0)
@@ -2451,8 +2483,8 @@ POST_KB_RESET PROC
 	OUT	DX, AL				; send to PPI port B
 KB_CLEAR:
 	XCHG	AX, DI				; save AX
-	MOV	AX, 30				; I/O delay for at least 20ms
-	CALL	IO_DELAY_MS
+	MOV	AX, 40				; I/O delay for at least 20ms
+	CALL	IO_DELAY_MS				; (double just in case)
 	XCHG	AX, DI				; restore AX
 	OR	AL, 11000000B 			; keyboard clock hold LOW and clear HIGH
 	OUT	DX, AL				; send to PPI port B
@@ -2477,8 +2509,7 @@ KB_CLEAR:
 ;
 	STI 						; enable interrupts
 KB_RESET_TEST:
-	NOP 						; give a little more time
-	NOP 						;  and a little more time still
+	IO_DELAY_SHORT				; give a little more time
 	POST_FLAG_TEST PKI			; KB test flag yet?
 	LOOPZ KB_RESET_TEST			; Loop until KB flag OR CX (timeout) is 0
 	CLI 						; disable interrupts again
@@ -2847,8 +2878,8 @@ POST_RSEP		DB	POST_R, 0
 ;
 POST_ERR		DB	CR,LF,'POST '		; POST Error
 POST_ERR_ERR	DB	'Error ', 0			; Error
-POST_ERR_PKI	DB	'KB INT', 0			; typically "301"
-POST_ERR_PKB	DB	'KB Init', 0		; Reset returned non-success
+POST_ERR_PKI	DB	'KB ERR', 0			; Reset non-success ("301")
+POST_ERR_PKB	DB	'KB RST', 0			; Reset returned non-success
 POST_ERR_PKEY	DB	'Key Stuck', 0		; Reset did not clear KBC
 POST_ERR_PFDC	DB	'FDC', 0			; General FD init failure
 POST_ERR_PFSK	DB	'FD Seek', 0		; seek test failure
@@ -2886,7 +2917,7 @@ STRINGS ENDP
 ; Output: BP = 0
 ;----------------------------------------------------------------------------;
 POST_ERROR_MSG PROC
-	SHL	BP, 1
+	SHL	BP, 1					; shift off warm boot flag
 	JZ	POST_ERROR_MSG_EXIT		; no errors?
 	MOV	CX, 7					; MOV	CX, L_POST_ERRORS
 	MOV	SI, OFFSET POST_ERRORS
@@ -7806,6 +7837,57 @@ WB_LOW_CHECK_OK:
 WB_TEST_DONE:
 WB_TEST ENDP
 
+			IF ARCH_TYPE EQ ARCH_EMM
+;----------------------------------------------------------------------------;
+; V40 Register Setup
+;----------------------------------------------------------------------------;
+; Use with EMM Computers/homebrew8088.com and possibly others
+;
+; Contributed by @Hak Foo:
+; https://forum.vcfed.org/index.php?threads/new-xt-bios-looking-for-testers.1239765/post-1272602
+;
+; Size: 47 bytes
+;----------------------------------------------------------------------------;
+INIT_V40 PROC
+	MOV	CX, 0FFFEh-0FFF0h		; loop counter
+	MOV	DX, 0FFFEh			; starting register address
+	MOV	SI, OFFSET V40_REG	; register data
+V40_REG_LOOP:
+	OUTS	DX, BYTE PTR CS:[SI]	; write DS:[SI] to I/O port DX
+	DEC	DX				; next lower port
+	LOOP	V40_REG_LOOP
+
+;----------------------------------------------------------------------------;
+; EMM/8042 Keyboard reset
+;
+	IO_DELAY
+	IO_DELAY
+	IN	AL, ATKB_IO			; read 
+	MOV	AL, 01100000b		; WRITE COMMAND BYTE TO KEYBOARD CONTROLLER
+	OUT	ATKB_CMD, AL		; OUT COMMAND PORT
+	MOV	AL, 01000001b		; PC MODE, ENABLE INTERRUPT
+	OUT	ATKB_IO, AL			; OUT DATA PORT
+	JMP	INIT_V40_RET
+
+V40_REG LABEL BYTE
+	DB	0				; FFFE: OPCN - INT SELECT
+	DB	00000110b			; FFFD: OPSEL - ENABLE TCU, ICU, DISABLE DMAU, SCU
+	DB	0				; FFFC: OPHA - ON CHIP PERIPHERAL HIGH ADDRESS REGISTER
+	DB	0				; FFFB: DULA - DMA LOWER ADDRESS REGISTER
+	DB	00100000b			; FFFA: IULA - 8259 LOWER ADDRESS REGISTER
+	DB	01000000b			; FFF9: TULA - 8254 LOWER ADDRESS REGISTER
+	DB	11010000b			; FFF8: SULA - SERIAL PORT LOWER ADDRESS REGISTER
+	DB	0				; FFF7: Reserved
+	DB	1				; FFF6: WCY2 - WAIT
+	DB	00100101b			; FFF5: WCY1 - WAIT
+	DB	00000110b			; FFF4: WMB - MEMORY BOUNDARIES
+	DB	0				; FFF3: Reserved
+	DB	0				; FFF2: RFC - REFRESH CONTROL
+	DB	0				; FFF1: Reserved
+	DB	00010100b			; FFF0: TCKS - TIMER PIN SELECTION
+
+INIT_V40 ENDP
+			ENDIF
 ;
 ; 116 bytes here
 ;
